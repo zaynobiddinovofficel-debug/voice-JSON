@@ -14,7 +14,9 @@ app.use(bodyParser.json({ limit: "50mb" }));
 const HF_TOKEN = process.env.HF_TOKEN;
 const STT_API_KEY = process.env.STT_API_KEY;
 
+// =========================
 // Ovoz → Text (STT)
+// =========================
 app.post("/api/stt", async (req, res) => {
   try {
     const { audioBase64 } = req.body;
@@ -32,15 +34,21 @@ app.post("/api/stt", async (req, res) => {
 
     const sttData = await sttRes.json();
     let text = sttData.result?.conversation_text || sttData.text || "Matn topilmadi";
+
     text = text.replace(/Speaker \d+:\s*/g, "").toLowerCase();
 
-    // Miqdorlarni normalizatsiya
+    // Sonlarni raqamga o‘zgartirish
     text = text
       .replace(/bitta/g, "1")
       .replace(/ikkita/g, "2")
-      .replace(/uch/g, "3")
-      .replace(/to'rt/g, "4")
-      .replace(/besh/g, "5");
+      .replace(/uchta|uch/g, "3")
+      .replace(/to'rt|to‘rt/g, "4")
+      .replace(/beshta|besh/g, "5")
+      .replace(/oltita/g, "6")
+      .replace(/yettita/g, "7")
+      .replace(/sakkizta/g, "8")
+      .replace(/toqqizta/g, "9")
+      .replace(/o'nta|o‘nta/g, "10");
 
     res.json({ text });
   } catch (err) {
@@ -49,27 +57,36 @@ app.post("/api/stt", async (req, res) => {
   }
 });
 
+// =========================
 // Text → JSON (AI)
+// =========================
 app.post("/api/parse-order", async (req, res) => {
   const { text } = req.body;
 
   const SYSTEM_PROMPT = `
-Siz AI Restaurant Order Management System siz.
-Foydalanuvchi buyurtma qilsa, quyidagi JSON formatida qaytaring:
+Siz restoran buyurtmalarini analiz qiluvchi AI tizimsiz.
+Foydalanuvchi gapini tahlil qiling.
+JSON format:
+[
+ {
+  "buyurtmaStoli": number | null,
+  "buyurtmaNomi": string | null,
+  "buyurtmaSoni": number | null,
+  "buyurtmaTuri": string | null
+ }
+]
+Agar buyurtma bo'lmasa:
 {
-  "tables": {
-    "table_number": {
-      "status": "ordering",
-      "items": [
-        { "name": "lavash", "quantity": 2, "price": 25000, "total": 50000 }
-      ],
-      "order_total": 50000
-    }
-  }
+ "message":"Kechirasiz, mavzudan chetlashdingiz"
 }
-Menu: lavash 25000, choy 5000, cola 12000, osh 30000, somsa 8000
-Foydalanuvchi gapini tahlil qilib, miqdorlarni raqam bilan JSONga qo‘ying.
-Boshqa gap bo‘lsa: "Kechirasiz, mavzudan chetlashdingiz"
+
+Misol:
+Input: "birinchi stolga turtashashlik 1 non 1 lavash berib oolin"
+Output: [
+  { "buyurtmaStoli": 1, "buyurtmaNomi": "turtashashlik", "buyurtmaSoni": 1, "buyurtmaTuri": null },
+  { "buyurtmaStoli": 1, "buyurtmaNomi": "non", "buyurtmaSoni": 1, "buyurtmaTuri": null },
+  { "buyurtmaStoli": 1, "buyurtmaNomi": "lavash", "buyurtmaSoni": 1, "buyurtmaTuri": null }
+]
 `;
 
   try {
@@ -78,31 +95,37 @@ Boshqa gap bo‘lsa: "Kechirasiz, mavzudan chetlashdingiz"
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${HF_TOKEN}`,
+          Authorization: `Bearer ${HF_TOKEN}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ inputs: SYSTEM_PROMPT + "\nUser: " + text }),
+        body: JSON.stringify({ inputs: `${SYSTEM_PROMPT}\nUser: ${text}\nAssistant:` }),
       }
     );
 
     const data = await response.json();
-    let output = data?.[0]?.generated_text || data?.generated_text || "Kechirasiz, AI javob bermadi";
+    let output = data?.[0]?.generated_text || data?.generated_text || "";
 
-    if (output.includes("Kechirasiz")) {
-      res.json({ response: "Kechirasiz, mavzudan chetlashdingiz" });
-      return;
-    }
+    // JSON ni ajratish
+    const arrStart = output.indexOf("[");
+    const arrEnd = output.lastIndexOf("]");
+    const objStart = output.indexOf("{");
+    const objEnd = output.lastIndexOf("}");
 
-    try {
-      const json = JSON.parse(output);
-      res.json({ response: json });
-    } catch {
-      res.json({ response: output });
-    }
+    let cleanJSON = null;
+
+    if (arrStart !== -1 && arrEnd !== -1) cleanJSON = output.substring(arrStart, arrEnd + 1);
+    else if (objStart !== -1 && objEnd !== -1) cleanJSON = output.substring(objStart, objEnd + 1);
+
+    if (!cleanJSON) return res.json({ response: { message: "Kechirasiz, mavzudan chetlashdingiz" } });
+
+    const parsed = JSON.parse(cleanJSON);
+    res.json({ response: parsed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "AI bilan bog'lanib bo'lmadi" });
   }
 });
 
-app.listen(5000, () => console.log("Backend running on http://localhost:5000"));
+app.listen(process.env.PORT || 5000, () =>
+  console.log("Backend running on http://localhost:5000")
+);
